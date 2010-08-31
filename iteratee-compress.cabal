@@ -31,3 +31,7 @@ Library
   Extra-libraries:   z
   if flag(debug)
       CPP-Options:   -DDEBUG
+
+Source-Repository head
+  Type:              darcs
+  Location:          http://code.haskell.org/iteratee-compress/
