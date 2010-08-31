@@ -10,7 +10,7 @@ Copyright:           2010 (c) Maciej Piechotka
 Category:            Codec, Data
 Build-type:          Simple
 -- Extra-source-files:  
-Cabal-version:       >=1.2
+Cabal-version:       >=1.6
 
 Flag Debug
   Description:       Enable debug support
