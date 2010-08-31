@@ -47,14 +47,14 @@ data ZLibException
     = NeedDictionary
     -- ^ Decompression requires user-supplied dictionary (not supported)
     | BufferError
-    -- ^ Buffer error - denotes the library error
+    -- ^ Buffer error - denotes a library error
 --    | File Error
     | StreamError
     -- ^ State of steam inconsistent
     | DataError
     -- ^ Input data corrupted
     | MemoryError
-    -- ^ Not enought memory
+    -- ^ Not enough memory
     | VersionError
     -- ^ Version error
     | Unexpected !CInt
@@ -69,11 +69,11 @@ instance Show ZLibParamsException where
     show (IncorrectWindowBits lvl)
         = "zlib: incorrect window bits " ++ show lvl
     show (IncorrectMemoryLevel lvl)
-        = "zlib: incorrect memory lvele " ++ show lvl
+        = "zlib: incorrect memory level " ++ show lvl
 
 instance Show ZLibException where
     show NeedDictionary = "zlib: needs dictionary"
-    show BufferError = "zlib: no progress is possible (internall error)"
+    show BufferError = "zlib: no progress is possible (internal error)"
 --    show FileError = "zlib: file I/O error"
     show StreamError = "zlib: stream error"
     show DataError = "zlib: data error"
@@ -443,7 +443,7 @@ mkDecompress frm cp@(DecompressParams wB _)
                 addForeignPtrFinalizer inflateEnd zstr
             return $! Right $! Initial $ ZStream zstr
 
--- User-releted code
+-- User-related code
 
 -- | Compress the input and send to inner iteratee.
 enumDeflate :: MonadIO m
