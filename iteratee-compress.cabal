@@ -12,6 +12,9 @@ Build-type:          Simple
 -- Extra-source-files:  
 Cabal-version:       >=1.2
 
+Flag Debug
+  Description:       Enable debug support
+  Default:           False
 
 Library
   Exposed-modules:   Data.Iteratee.ZLib
@@ -21,7 +24,10 @@ Library
                      monads-fd >= 0.1 && < 0.2,
                      zlib >= 0.5 && < 6
   Build-tools:       c2hs
-  Extensions:        DeriveDataTypeable,
+  Extensions:        CPP,
+                     DeriveDataTypeable,
                      ForeignFunctionInterface,
                      ScopedTypeVariables
   Extra-libraries:   z
+  if flag(debug)
+      CPP-Options:   -DDEBUG

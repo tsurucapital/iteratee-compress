@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -21,9 +22,15 @@ import Control.Monad.Trans
 import Data.ByteString as BS
 import Data.ByteString.Internal
 import Data.Iteratee
+import Data.Iteratee.IO
 import Data.Typeable
 import Foreign
 import Foreign.C
+#ifdef DEBUG
+import qualified Foreign.Concurrent as C
+import System.IO (stderr)
+import qualified System.IO as IO
+#endif
 
 -- | Denotes error is user-supplied parameter
 data ZLibParamsException
@@ -178,9 +185,6 @@ convParam f (CompressParams c m w l s _)
 -- 
 -- [1] Named for 'historical' reasons
 
-mkByteString :: MonadIO m => Int -> m ByteString
-mkByteString s = liftIO $ create s (\_ -> return ())
-
 newtype Initial = Initial ZStream
 data EmptyIn = EmptyIn !ZStream !ByteString
 data FullOut = FullOut !ZStream !ByteString
@@ -190,6 +194,38 @@ data Finishing = Finishing !ZStream !ByteString
 withByteString :: ByteString -> (Ptr Word8 -> Int -> IO a) -> IO a
 withByteString (PS ptr off len) f
     = withForeignPtr ptr (\ptr' -> f (ptr' `plusPtr` off) len)
+
+#ifdef DEBUG
+mkByteString :: MonadIO m => Int -> m ByteString
+mkByteString s = liftIO $ do
+    base <- mallocForeignPtrArray s
+    withForeignPtr base $ \ptr ->  C.addForeignPtrFinalizer base $ do
+        IO.hPutStrLn stderr $ "Freed buffer " ++ show ptr
+    IO.hPutStrLn stderr $ "Allocated buffer " ++ show base
+    return $! PS base 0 s
+
+dumpZStream :: ZStream -> IO ()
+dumpZStream zstr = withZStream zstr $ \zptr -> do
+    IO.hPutStr stderr $ "<<ZStream"
+    IO.hPutStr stderr . (" next_in=" ++) . show =<<
+        (#{peek z_stream, next_in} zptr :: IO (Ptr ()))
+    IO.hPutStr stderr . (" avail_in=" ++) . show =<<
+        (#{peek z_stream, avail_in} zptr :: IO CUInt)
+    IO.hPutStr stderr . (" total_in=" ++) . show =<<
+        (#{peek z_stream, total_in} zptr :: IO CULong)
+    IO.hPutStr stderr . (" next_out=" ++) . show =<<
+        (#{peek z_stream, next_out} zptr :: IO (Ptr ()))
+    IO.hPutStr stderr . (" avail_out=" ++) . show =<<
+        (#{peek z_stream, avail_out} zptr :: IO CUInt)
+    IO.hPutStr stderr .  (" total_out=" ++) . show =<<
+        (#{peek z_stream, total_out} zptr :: IO CULong)
+--    IO.hPutStr stderr . (" msg=" ++) =<< peekCString =<<
+--        (#{peek z_stream, msg} zptr)
+    IO.hPutStrLn stderr ">>"
+#else
+mkByteString :: MonadIO m => Int -> m ByteString
+mkByteString s = liftIO $ create s (\_ -> return ())
+#endif
 
 putOutBuffer :: Int -> ZStream -> IO ByteString
 putOutBuffer size zstr = do
@@ -222,6 +258,9 @@ insertOut :: MonadIO m
           -> Enumerator ByteString m a
 insertOut size run (Initial zstr) iter = return $! do
     _out <- liftIO $ putOutBuffer size zstr
+#ifdef DEBUG
+    liftIO $ IO.hPutStrLn stderr $ "Inserted out buffer of size " ++ show size
+#endif
     joinIM $ fill size run (EmptyIn zstr _out) iter
 
 fill :: MonadIO m
@@ -230,15 +269,25 @@ fill :: MonadIO m
      -> EmptyIn
      -> Enumerator ByteString m a
 fill size run (EmptyIn zstr _out) iter
-    = let fillI = liftI fill'
-          fill' (Chunk _in)
-              | BS.null _in = do
+    = let fill' (Chunk _in)
+              | not (BS.null _in) = do
                   liftIO $ putInBuffer zstr _in
+#ifdef DEBUG
+                  liftIO $ IO.hPutStrLn stderr $
+                      "Inserted in buffer of size " ++ show (BS.length _in)
+#endif
                   joinIM $ doRun size run (Invalid zstr _in _out) iter
               | otherwise = fillI
           fill' (EOF Nothing)
               = joinIM $ finish size run (Finishing zstr BS.empty) iter
           fill' (EOF (Just err)) = throwRecoverableErr err fill'
+#ifdef DEBUG
+          fillI = do
+              liftIO $ IO.hPutStrLn stderr $ "About to insert in buffer"
+              liftI fill'
+#else
+          fillI = liftI fill'
+#endif
       in return $! fillI
 
 swapOut :: MonadIO m
@@ -248,6 +297,9 @@ swapOut :: MonadIO m
         -> Enumerator ByteString m a
 swapOut size run (FullOut zstr _in) iter = return $! do
     _out <- liftIO $ putOutBuffer size zstr
+#ifdef DEBUG
+    liftIO $ IO.hPutStrLn stderr $ "Swapped out buffer of size " ++ show size
+#endif
     joinIM $ doRun size run (Invalid zstr _in _out) iter
 
 doRun :: MonadIO m
@@ -256,7 +308,14 @@ doRun :: MonadIO m
       -> Invalid
       -> Enumerator ByteString m a
 doRun size run (Invalid zstr _in _out) iter = return $! do
+#ifdef DEBUG
+    liftIO $ IO.hPutStrLn stderr $ "About to run"
+    liftIO $ dumpZStream zstr
+#endif
     status <- liftIO $ run zstr #{const Z_NO_FLUSH}
+#ifdef DEBUG
+    liftIO $ IO.hPutStrLn stderr $ "Runned"
+#endif
     case fromErrno status of
         Left err -> joinIM $ enumErr err iter
         Right False -> do -- End of stream
@@ -289,6 +348,10 @@ finish :: MonadIO m
        -> Finishing
        -> Enumerator ByteString m a
 finish size run fin@(Finishing zstr _in) iter = return $! do
+#ifdef DEBUG
+    liftIO $ IO.hPutStrLn stderr $
+        "Finishing with out buffer of size" ++ show size
+#endif
     _out <- liftIO $ putOutBuffer size zstr
     status <- liftIO $ run zstr #{const Z_FINISH}
     case fromErrno status of
@@ -336,11 +399,23 @@ inflateInit2 s wB
     = withCString #{const_str ZLIB_VERSION} $ \v ->
         inflateInit2_ s wB v #{size z_stream}
 
+#ifdef DEBUG
+deflate' :: ZStream -> CInt -> IO CInt
+deflate' z f = withZStream z $ \p -> do
+    IO.hPutStrLn stderr "About to run deflate"
+    deflate p f
+
+inflate' :: ZStream -> CInt -> IO CInt
+inflate' z f = withZStream z $ \p -> do
+    IO.hPutStrLn stderr "About to run inflate"
+    inflate p f
+#else
 deflate' :: ZStream -> CInt -> IO CInt
 deflate' z f = withZStream z $ \p -> deflate p f
 
 inflate' :: ZStream -> CInt -> IO CInt
 inflate' z f = withZStream z $ \p -> inflate p f
+#endif
 
 mkCompress :: Format -> CompressParams
            -> IO (Either ZLibParamsException Initial)
