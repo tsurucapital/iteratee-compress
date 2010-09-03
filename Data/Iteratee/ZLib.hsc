@@ -3,19 +3,28 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 module Data.Iteratee.ZLib
-  (   
-    ZLibParamsException(..),
-    ZLibException(..),
-    CompressParams(..),
-    DecompressParams(..),
-    Format(..),
+  (
+    -- * Enumerators
     enumInflate,
     enumDeflate,
+    -- * Exceptions
+    ZLibParamsException(..),
+    ZLibException(..),
+    -- * Parameters
+    CompressParams(..),
+    defaultCompressParams,
+    DecompressParams(..),
+    defaultDecompressParams,
+    Format(..),
+    CompressionLevel(..),
+    Method(..),
+    WindowBits(..),
+    MemoryLevel(..),
+    CompressionStrategy(..),
   )
 where
 #include <zlib.h>
 
-import Codec.Compression.Zlib.Internal hiding (StreamError, DataError)
 import Control.Applicative
 import Control.Exception
 import Control.Monad.Trans
@@ -94,6 +103,137 @@ mallocZStream = ZStream <$> mallocForeignPtrBytes #{size z_stream}
 
 -- Following code is copied from Duncan Coutts zlib haskell library version
 -- 0.5.2.0 ((c) 2006-2008 Duncan Coutts, published on BSD licence) and adapted
+
+-- | Set of parameters for compression. For sane defaults use
+-- 'defaultCompressParams'
+data CompressParams = CompressParams {
+      compressLevel :: !CompressionLevel,
+      compressMethod :: !Method,
+      compressWindowBits :: !WindowBits,
+      compressMemoryLevel :: !MemoryLevel,
+      compressStrategy :: !CompressionStrategy,
+      -- | The size of output buffer. That is the size of 'Chunk's that will be
+      -- emitted to inner iterator (except the last 'Chunk').
+      compressBufferSize :: !Int
+    }
+
+defaultCompressParams
+    = CompressParams DefaultCompression Deflated DefaultWindowBits 
+                     DefaultMemoryLevel DefaultStrategy (8*1024)
+
+-- | Set of parameters for decompression. For sane defaults see 
+-- 'defaultDecompressParams'.
+data DecompressParams = DecompressParams {
+      -- | Window size - it have to be at least the size of
+      -- 'compressWindowBits' the stream was compressed with.
+      --
+      -- Default in 'defaultDecompressParams' is the maximum window size - 
+      -- please do not touch it unless you know what you are doing.
+      decompressWindowBits :: !WindowBits,
+      -- | The size of output buffer. That is the size of 'Chunk's that will be
+      -- emitted to inner iterator (except the last 'Chunk').
+      decompressBufferSize :: !Int
+    }
+
+defaultDecompressParams = DecompressParams DefaultWindowBits (8*1024)
+
+-- | Specify the format for compression and decompression
+data Format
+    = GZip
+    -- ^ The gzip format is widely used and uses a header with checksum and
+    -- some optional metadata about the compress file.
+    --
+    -- It is intended primarily for compressing individual files but is also
+    -- used for network protocols such as HTTP.
+    --
+    -- The format is described in RFC 1952 
+    -- <http://www.ietf.org/rfc/rfc1952.txt>.
+    | Zlib
+    -- ^ The zlib format uses a minimal header with a checksum but no other
+    -- metadata. It is designed for use in network protocols.
+    --
+    -- The format is described in RFC 1950
+    -- <http://www.ietf.org/rfc/rfc1950.txt>
+    | Raw
+    -- ^ The \'raw\' format is just the DEFLATE compressed data stream without
+    -- and additionl headers. 
+    --
+    -- Thr format is described in RFC 1951
+    -- <http://www.ietf.org/rfc/rfc1951.txt>
+    | GZipOrZlib
+    -- ^ "Format" for decompressing a 'Zlib' or 'GZip' stream.
+    deriving (Eq)
+
+-- | The compression level specify the tradeoff between speed and compression.
+data CompressionLevel
+    = DefaultCompression
+    -- ^ Default compression level set at 6.
+    | NoCompression
+    -- ^ No compression, just a block copy.
+    | BestSpeed
+    -- ^ The fastest compression method (however less compression)
+    | BestCompression
+    -- ^ The best compression method (however slowest)
+    | CompressionLevel Int
+    -- ^ Compression level set by number from 1 to 9
+
+-- | Specify the compression method.
+data Method
+    = Deflated
+    -- ^ \'Deflate\' is so far the only method supported.          
+
+-- | This specify the size of compression level. Larger values result in better
+-- compression at the expense of highier memory usage.
+--
+-- The compression window size is 2 to the power of the value of the window
+-- bits. 
+--
+-- The total memory used depends on windows bits and 'MemoryLevel'.
+data WindowBits
+    = WindowBits Int
+    -- ^ The size of window bits. It have to be between @8@ (which corresponds
+    -- to 256b i.e. 32B) and @15@ (which corresponds to 32 kib i.e. 4kiB).
+    | DefaultWindowBits
+    -- ^ The default window size which is 4kiB
+
+-- | The 'MemoryLevel' specifies how much memory should be allocated for the
+-- internal state. It is a tradeoff between memory usage, speed and
+-- compression.
+-- Using more memory allows faster and better compression.
+--
+-- The memory used for interal state, excluding 'WindowBits', is 512 bits times
+-- 2 to power of memory level.
+--
+-- The total amount of memory use depends on the 'WindowBits' and
+-- 'MemoryLevel'.
+data MemoryLevel
+    = DefaultMemoryLevel
+    -- ^ Default memory level set to 8.
+    | MinMemoryLevel
+    -- ^ Use the small amount of memory (equivalent to memory level 1) - i.e.
+    -- 1024b or 256 B.
+    -- It slow and reduces the compresion ratio.
+    | MaxMemoryLevel
+    -- ^ Maximum memory level for optimal compression speed (equivalent to
+    -- memory level 9).
+    -- The internal state is 256kib or 32kiB.
+    | MemoryLevel Int
+    -- ^ A specific level. It have to be between 1 and 9. 
+
+-- | Tunes the compress algorithm but does not affact the correctness.
+data CompressionStrategy
+    = DefaultStrategy
+    -- ^ Default strategy
+    | Filtered
+    -- ^ Use the filtered compression strategy for data produced by a filter
+    -- (or predictor). Filtered data consists mostly of small values with a
+    -- somewhat random distribution. In this case, the compression algorithm
+    -- is tuned to compress them better. The effect of this strategy is to
+    -- force more Huffman coding and less string matching; it is somewhat
+    -- intermediate between 'DefaultStrategy' and 'HuffmanOnly'.
+    | HuffmanOnly
+    -- ^ Use the Huffman-only compression strategy to force Huffman encoding
+    -- only (no string match). 
 
 fromMethod :: Method -> CInt
 fromMethod Deflated = #{const Z_DEFLATED}
