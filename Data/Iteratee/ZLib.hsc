@@ -72,6 +72,34 @@ data ZLibException
     -- ^ Incorrect state - denotes error in library
     deriving (Eq,Typeable)
 
+-- | Denotes the flush that can be sent to stream
+data ZlibFlush
+    = SyncFlush
+    -- ^ All pending output is flushed and all input that is available is sent
+    -- to inner Iteratee.
+    | FullFlush
+    -- ^ Flush all pending output and reset the compression state. It allows to
+    -- restart from this point if compression was damaged but it can seriously 
+    -- affect the compression rate.
+    --
+    -- It may be only used during compression.
+    | Block
+    -- ^ If the iteratee is compressing it requests to stop when next block is
+    -- emmited. On the beginning it skips only header if and only if it exists.
+    deriving (Eq,Typeable)
+
+instance Show ZlibFlush where
+    show SyncFlush = "zlib: flush requested"
+    show FullFlush = "zlib: full flush requested"
+    show Block = "zlib: block flush requested"
+
+instance Exception ZlibFlush
+
+fromFlush :: ZlibFlush -> CInt
+fromFlush SyncFlush = #{const Z_SYNC_FLUSH}
+fromFlush FullFlush = #{const Z_FULL_FLUSH}
+fromFlush Block = #{const Z_BLOCK}
+
 instance Show ZLibParamsException where
     show (IncorrectCompressionLevel lvl)
         = "zlib: incorrect compression level " ++ show lvl
@@ -298,22 +326,28 @@ convParam f (CompressParams c m w l s _)
           r = Right
       in eit (\c_ -> eit (\b_ -> eit (\l_ -> r (c_, m', b_, l_, s')) l') b') c'
 --
--- In following code we go through 6 states. Some of the operations are
+-- In following code we go through 7 states. Some of the operations are
 -- 'deterministic' like 'insertOut' and some of them depends on input ('fill')
 -- or library call.
 --
---              insertOut                fill[1]
---  (Initial) -------------> (EmptyIn) -----------> (Finishing)
---         ^                    ^ |                    |
---         |             run[2] | |                    |
---         |    run[1]          | |                    |
---         \------------------\ | | fill[0]            | finish
---                            | | |                    |
---                            | | |                    |
---               swapOut      | | v                    v
---  (FullOut) -------------> (Invalid)              (Finished)
---            <------------
---               run[0]
+--                                                  (Finished)
+--                                                     ^
+--                                                     |
+--                                                     |
+--                                                     | finish
+--                                                     |
+--              insertOut                fill[1]       |
+---  (Initial) -------------> (EmptyIn) -----------> (Finishing)
+--         ^                    ^ | ^ |
+--         |             run[2] | | | \------------------\
+--         |                    | | |                    |
+--         |                    | | \------------------\ |
+--         |    run[1]          | |        flush[0]    | |
+--         \------------------\ | | fill[0]            | | fill[3]
+--                            | | |                    | |
+--                            | | |                    | |
+--               swapOut      | | v       flush[1]     | v
+--  (FullOut) -------------> (Invalid) <----------- (Flushing)
 --
 -- Initial: Initial state, both buffers are empty
 -- EmptyIn: Empty in buffer, out waits untill filled
@@ -322,7 +356,10 @@ convParam f (CompressParams c m w l s _)
 -- Finishing: There is no more in data and in buffer is empty. Waits till
 --    all outs was sent.
 -- Finished: Operation finished
+-- Flushing: Flush requested
 -- 
+-- Please note that the decompressing can finish also on flush and finish.
+--
 -- [1] Named for 'historical' reasons
 
 newtype Initial = Initial ZStream
@@ -330,6 +367,7 @@ data EmptyIn = EmptyIn !ZStream !ByteString
 data FullOut = FullOut !ZStream !ByteString
 data Invalid = Invalid !ZStream !ByteString !ByteString
 data Finishing = Finishing !ZStream !ByteString
+data Flushing = Flushing !ZStream !ZlibFlush !ByteString
 
 withByteString :: ByteString -> (Ptr Word8 -> Int -> IO a) -> IO a
 withByteString (PS ptr off len) f
@@ -420,7 +458,11 @@ fill size run (EmptyIn zstr _out) iter
               | otherwise = fillI
           fill' (EOF Nothing)
               = joinIM $ finish size run (Finishing zstr BS.empty) iter
-          fill' (EOF (Just err)) = throwRecoverableErr err fill'
+          fill' (EOF (Just err))
+              = case fromException err of
+                  Just err' ->
+                      joinIM $ flush size run (Flushing zstr err' _out) iter
+                  Nothing -> throwRecoverableErr err fill'
 #ifdef DEBUG
           fillI = do
               liftIO $ IO.hPutStrLn stderr $ "About to insert in buffer"
@@ -481,6 +523,35 @@ doRun size run (Invalid zstr _in _out) iter = return $! do
                 _ -> joinIM $ case avail_in of
                     0 -> fill size run (EmptyIn zstr _out) iter
                     _ -> enumErr IncorrectState iter
+
+flush :: MonadIO m
+      => Int
+      -> (ZStream -> CInt -> IO CInt)
+      -> Flushing
+      -> Enumerator ByteString m a
+flush size run fin@(Flushing zstr _flush _out) iter = return $! do
+    status <- liftIO $ run zstr (fromFlush _flush)
+    case fromErrno status of
+        Left err -> joinIM $ enumErr err iter
+        Right False -> do -- Finished
+            out <- liftIO $ pullOutBuffer zstr _out
+            iter' <- lift $ enumPure1Chunk out iter
+            res <- lift $ tryRun iter'
+            case res of
+                Left err@(SomeException _) -> throwErr err
+                Right x -> idone x (Chunk BS.empty)
+        Right True -> do
+            (avail_in, avail_out) <- liftIO $ withZStream zstr $ \zptr -> do
+                avail_in <- liftIO $ #{peek z_stream, avail_in} zptr
+                avail_out <- liftIO $ #{peek z_stream, avail_out} zptr
+                return (avail_in, avail_out) :: IO (CInt, CInt)
+            case avail_out of
+                0 -> do
+                    out <- liftIO $ pullOutBuffer zstr _out
+                    iter' <- lift $ enumPure1Chunk out iter
+                    out' <- liftIO $ putOutBuffer size zstr
+                    joinIM $ flush size run (Flushing zstr _flush out') iter'
+                _ -> joinIM $ insertOut size run (Initial zstr) iter
 
 finish :: MonadIO m
        => Int
