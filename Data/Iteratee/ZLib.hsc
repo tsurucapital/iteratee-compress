@@ -637,8 +637,8 @@ mkCompress frm cp
             zstr <- mallocForeignPtrBytes #{size z_stream}
             withForeignPtr zstr $ \zptr -> do
                 memset (castPtr zptr) 0 #{size z_stream}
-                deflateInit2 zptr c m b l s
-                addForeignPtrFinalizer deflateEnd zstr
+                deflateInit2 zptr c m b l s `finally`
+                    addForeignPtrFinalizer deflateEnd zstr
             return $! Right $! Initial $ ZStream zstr
 
 mkDecompress :: Format -> DecompressParams
@@ -650,8 +650,8 @@ mkDecompress frm cp@(DecompressParams wB _)
             zstr <- mallocForeignPtrBytes #{size z_stream}
             withForeignPtr zstr $ \zptr -> do
                 memset (castPtr zptr) 0 #{size z_stream}
-                inflateInit2 zptr wB'
-                addForeignPtrFinalizer inflateEnd zstr
+                inflateInit2 zptr wB' `finally`
+                    addForeignPtrFinalizer inflateEnd zstr
             return $! Right $! Initial $ ZStream zstr
 
 -- User-related code
