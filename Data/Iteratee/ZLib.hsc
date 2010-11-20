@@ -677,4 +677,4 @@ enumInflate f dp@(DecompressParams _ size) iter = do
     dcmp <- liftIO $ mkDecompress f dp
     case dcmp of
         Left err -> enumErr err iter
-        Right init -> insertOut size deflate' init iter
+        Right init -> insertOut size inflate' init iter
