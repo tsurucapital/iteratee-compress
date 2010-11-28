@@ -384,7 +384,8 @@ mkByteString s = liftIO $ do
 
 dumpZStream :: ZStream -> IO ()
 dumpZStream zstr = withZStream zstr $ \zptr -> do
-    IO.hPutStr stderr $ "<<ZStream"
+    IO.hPutStr stderr $ "<<ZStream@"
+    IO.hPutStr stderr $ (show zptr)
     IO.hPutStr stderr . (" next_in=" ++) . show =<<
         (#{peek z_stream, next_in} zptr :: IO (Ptr ()))
     IO.hPutStr stderr . (" avail_in=" ++) . show =<<
@@ -563,7 +564,7 @@ finish :: MonadIO m
 finish size run fin@(Finishing zstr _in) iter = return $! do
 #ifdef DEBUG
     liftIO $ IO.hPutStrLn stderr $
-        "Finishing with out buffer of size" ++ show size
+        "Finishing with out buffer of size " ++ show size
 #endif
     _out <- liftIO $ putOutBuffer size zstr
     status <- liftIO $ run zstr #{const Z_FINISH}
