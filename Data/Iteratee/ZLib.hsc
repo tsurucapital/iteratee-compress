@@ -456,8 +456,10 @@ fill size run (EmptyIn zstr _out) iter
 #endif
                   joinIM $ doRun size run (Invalid zstr _in _out) iter
               | otherwise = fillI
-          fill' (EOF Nothing)
-              = joinIM $ finish size run (Finishing zstr BS.empty) iter
+          fill' (EOF Nothing) = do
+              out <- liftIO $ pullOutBuffer zstr _out 
+              iter' <- lift $ enumPure1Chunk out iter
+              joinIM $ finish size run (Finishing zstr BS.empty) iter'
           fill' (EOF (Just err))
               = case fromException err of
                   Just err' ->
