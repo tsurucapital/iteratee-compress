@@ -14,10 +14,11 @@ Cabal-version:       >=1.6
 
 Flag Debug
   Description:       Enable debug support
-  Default:           False
+  Default:           True
 
 Library
-  Exposed-modules:   Data.Iteratee.ZLib
+  Exposed-modules:   Data.Iteratee.BZip,
+                     Data.Iteratee.ZLib
   Build-depends:     base >= 4 && < 5,
                      bytestring >= 0.9 && < 0.10,
                      iteratee >= 0.4 && < 0.9,
@@ -27,7 +28,7 @@ Library
                      DeriveDataTypeable,
                      ForeignFunctionInterface,
                      ScopedTypeVariables
-  Extra-libraries:   z
+  Extra-libraries:   z, bz2
   if flag(debug)
       CPP-Options:   -DDEBUG
 
