@@ -476,10 +476,10 @@ verboseLevel :: CInt
 verboseLevel = 3
 #else
 compress' :: BZStream -> CInt -> IO CInt
-compress' bz f = withBZStream z $ \p -> compress p f
+compress' bz f = withBZStream bz $ \p -> compress p f
 
-decompress :: BZStream -> CInt -> IO CInt
-decompress' bz f = withBZStream z $ \p -> decompress p f
+decompress' :: BZStream -> CInt -> IO CInt
+decompress' bz _ = withBZStream bz decompress
 
 verboseLevel :: CInt
 verboseLevel = 0
