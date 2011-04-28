@@ -132,19 +132,19 @@ defaultDecompressParams = DecompressParams False (8*1024)
 -- | The compression level specify the tradeoff between speed and compression.
 data BlockSize
     = DefaultBlockSize
-    -- ^ Default compression level set at 6.
+    -- ^ Default compression level set at 6
     | BestSpeed
     -- ^ The fastest compression method (however less compression)
     | BestCompression
     -- ^ The best compression method (however slowest)
     | CompressionLevel !Int
-    -- ^ Compression level set by number from 0 to 250
+    -- ^ Compression level set by number from 1 to 9
 
 data WorkFactor
     = DefaultWorkFactor
-    | BestSpeedWorkFactor
-    | BestCompressionWorkFactor
+      -- ^ Default work factor (set at 30)
     | WorkFactor !Int
+      -- ^ Hand-tuned work factor
 
 fromBlockSize :: BlockSize -> Either BZipParamsException CInt
 fromBlockSize DefaultBlockSize = Right $! 6
@@ -156,8 +156,6 @@ fromBlockSize (CompressionLevel lvl)
 
 fromWorkFactor :: WorkFactor -> Either BZipParamsException CInt
 fromWorkFactor DefaultWorkFactor = Right $! 0
-fromWorkFactor BestSpeedWorkFactor = Right $! 1
-fromWorkFactor BestCompressionWorkFactor = Right $! 250
 fromWorkFactor (WorkFactor wf)
     | wf < 0 || wf > 250 = Left $! IncorrectWorkFactor $! fromIntegral wf
     | otherwise =  Right $! fromIntegral wf
