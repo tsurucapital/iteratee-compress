@@ -287,19 +287,19 @@ insertOut :: MonadIO m
           => Int
           -> (BZStream -> CInt -> IO CInt)
           -> Initial
-          -> Enumerator ByteString m a
-insertOut size run (Initial bzstr) iter = return $! do
+          -> Enumeratee ByteString ByteString m a
+insertOut size run (Initial bzstr) iter = do
     _out <- liftIO $ putOutBuffer size bzstr
 #ifdef DEBUG
     liftIO $ IO.hPutStrLn stderr $ "Inserted out buffer of size " ++ show size
 #endif
-    joinIM $ fill size run (EmptyIn bzstr _out) iter
+    fill size run (EmptyIn bzstr _out) iter
 
 fill :: MonadIO m
      => Int
      -> (BZStream -> CInt -> IO CInt)
      -> EmptyIn
-     -> Enumerator ByteString m a
+     -> Enumeratee ByteString ByteString m a
 fill size run (EmptyIn bzstr _out) iter
     = let fill' (Chunk _in)
               | not (BS.null _in) = do
@@ -308,16 +308,15 @@ fill size run (EmptyIn bzstr _out) iter
                   liftIO $ IO.hPutStrLn stderr $
                       "Inserted in buffer of size " ++ show (BS.length _in)
 #endif
-                  joinIM $ doRun size run (Invalid bzstr _in _out) iter
+                  doRun size run (Invalid bzstr _in _out) iter
               | otherwise = fillI
           fill' (EOF Nothing) = do
-              out <- liftIO $ pullOutBuffer bzstr _out 
+              out <- liftIO $ pullOutBuffer bzstr _out
               iter' <- lift $ enumPure1Chunk out iter
-              joinIM $ finish size run (Finishing bzstr BS.empty) iter'
+              finish size run (Finishing bzstr BS.empty) iter'
           fill' (EOF (Just err))
               = case fromException err of
-                  Just err' ->
-                      joinIM $ flush size run (Flushing bzstr err' _out) iter
+                  Just err' -> flush size run (Flushing bzstr err' _out) iter
                   Nothing -> throwRecoverableErr err fill'
 #ifdef DEBUG
           fillI = do
@@ -326,26 +325,26 @@ fill size run (EmptyIn bzstr _out) iter
 #else
           fillI = liftI fill'
 #endif
-      in return $! fillI
+      in fillI
 
 swapOut :: MonadIO m
         => Int
         -> (BZStream -> CInt -> IO CInt)
         -> FullOut
-        -> Enumerator ByteString m a
-swapOut size run (FullOut bzstr _in) iter = return $! do
+        -> Enumeratee ByteString ByteString m a
+swapOut size run (FullOut bzstr _in) iter = do
     _out <- liftIO $ putOutBuffer size bzstr
 #ifdef DEBUG
     liftIO $ IO.hPutStrLn stderr $ "Swapped out buffer of size " ++ show size
 #endif
-    joinIM $ doRun size run (Invalid bzstr _in _out) iter
+    doRun size run (Invalid bzstr _in _out) iter
 
 doRun :: MonadIO m
       => Int
       -> (BZStream -> CInt -> IO CInt)
       -> Invalid
-      -> Enumerator ByteString m a
-doRun size run (Invalid bzstr _in _out) iter = return $! do
+      -> Enumeratee ByteString ByteString m a
+doRun size run (Invalid bzstr _in _out) iter = do
 #ifdef DEBUG
     liftIO $ IO.hPutStrLn stderr $ "About to run"
     liftIO $ dumpZStream bzstr
@@ -355,15 +354,14 @@ doRun size run (Invalid bzstr _in _out) iter = return $! do
     liftIO $ IO.hPutStrLn stderr $ "Runned"
 #endif
     case fromErrno status of
-        Left err -> joinIM $ enumErr err iter
+        Left err -> do
+            _ <- joinIM $ enumErr err iter
+            throwErr (toException err)
         Right False -> do -- End of stream
             remaining <- liftIO $ pullInBuffer bzstr _in
             out <- liftIO $ pullOutBuffer bzstr _out
             iter' <- lift $ enumPure1Chunk out iter
-            res <- lift $ tryRun iter'
-            case res of
-                Left err@(SomeException _) -> throwErr err
-                Right x -> idone x (Chunk remaining)
+            idone iter' (Chunk remaining)
         Right True -> do -- Continue
             (avail_in, avail_out) <- liftIO $ withBZStream bzstr $ \bzptr -> do
                 avail_in <- liftIO $ #{peek bz_stream, avail_in} bzptr
@@ -373,29 +371,30 @@ doRun size run (Invalid bzstr _in _out) iter = return $! do
                 0 -> do
                     out <- liftIO $ pullOutBuffer bzstr _out
                     iter' <- lift $ enumPure1Chunk out iter
-                    joinIM $ case avail_in of
+                    case avail_in of
                         0 -> insertOut size run (Initial bzstr) iter'
                         _ -> swapOut size run (FullOut bzstr _in) iter'
-                _ -> joinIM $ case avail_in of
+                _ -> case avail_in of
                     0 -> fill size run (EmptyIn bzstr _out) iter
-                    _ -> enumErr IncorrectState iter
+                    _ -> do
+                        _ <- joinIM $ enumErr IncorrectState iter
+                        throwErr (toException IncorrectState)
 
 flush :: MonadIO m
       => Int
       -> (BZStream -> CInt -> IO CInt)
       -> Flushing
-      -> Enumerator ByteString m a
-flush size run fin@(Flushing bzstr _flush _out) iter = return $! do
+      -> Enumeratee ByteString ByteString m a
+flush size run fin@(Flushing bzstr _flush _out) iter = do
     status <- liftIO $ run bzstr (fromFlush _flush)
     case fromErrno status of
-        Left err -> joinIM $ enumErr err iter
+        Left err -> do
+            _ <- joinIM $ enumErr err iter
+            throwErr (toException err)
         Right False -> do -- Finished
             out <- liftIO $ pullOutBuffer bzstr _out
             iter' <- lift $ enumPure1Chunk out iter
-            res <- lift $ tryRun iter'
-            case res of
-                Left err@(SomeException _) -> throwErr err
-                Right x -> idone x (Chunk BS.empty)
+            idone iter' (Chunk BS.empty)
         Right True -> do
             (avail_in, avail_out) <- liftIO $ withBZStream bzstr $ \bzptr -> do
                 avail_in <- liftIO $ #{peek bz_stream, avail_in} bzptr
@@ -406,15 +405,15 @@ flush size run fin@(Flushing bzstr _flush _out) iter = return $! do
                     out <- liftIO $ pullOutBuffer bzstr _out
                     iter' <- lift $ enumPure1Chunk out iter
                     out' <- liftIO $ putOutBuffer size bzstr
-                    joinIM $ flush size run (Flushing bzstr _flush out') iter'
-                _ -> joinIM $ insertOut size run (Initial bzstr) iter
+                    flush size run (Flushing bzstr _flush out') iter'
+                _ -> insertOut size run (Initial bzstr) iter
 
 finish :: MonadIO m
        => Int
        -> (BZStream -> CInt -> IO CInt)
        -> Finishing
-       -> Enumerator ByteString m a
-finish size run fin@(Finishing bzstr _in) iter = return $! do
+       -> Enumeratee ByteString ByteString m a
+finish size run fin@(Finishing bzstr _in) iter = do
 #ifdef DEBUG
     liftIO $ IO.hPutStrLn stderr $
         "Finishing with out buffer of size " ++ show size
@@ -422,15 +421,14 @@ finish size run fin@(Finishing bzstr _in) iter = return $! do
     _out <- liftIO $ putOutBuffer size bzstr
     status <- liftIO $ run bzstr #{const BZ_FINISH}
     case fromErrno status of
-        Left err -> joinIM $ enumErr err iter
+        Left err -> do
+            _ <- lift $ enumErr err iter
+            throwErr (toException err)
         Right False -> do -- Finished
             remaining <- liftIO $ pullInBuffer bzstr _in
             out <- liftIO $ pullOutBuffer bzstr _out
             iter' <- lift $ enumPure1Chunk out iter
-            res <- lift $ tryRun iter'
-            case res of
-                Left err@(SomeException _) -> throwErr err
-                Right x -> idone x (Chunk remaining)
+            idone iter' (Chunk remaining)
         Right True -> do
             (avail_in, avail_out) <- liftIO $ withBZStream bzstr $ \bzptr -> do
                 avail_in <- liftIO $ #{peek bz_stream, avail_in} bzptr
@@ -441,8 +439,10 @@ finish size run fin@(Finishing bzstr _in) iter = return $! do
                     out <- liftIO $ withBZStream bzstr $ \bzptr ->
                         pullOutBuffer bzstr _out
                     iter' <- lift $ enumPure1Chunk out iter
-                    joinIM $ finish size run fin iter'
-                _ -> throwErr $! SomeException IncorrectState
+                    finish size run fin iter'
+                _ -> do
+                    _ <-  lift $ enumErr (toException IncorrectState) iter
+                    throwErr $! toException IncorrectState
 
 foreign import ccall unsafe "BZ2_bzCompressInit"
                              compressInit :: Ptr BZStream -> CInt -> CInt
@@ -511,20 +511,24 @@ mkDecompress (DecompressParams small _) = do
 -- | Compress the input and send to inner iteratee.
 enumCompress :: MonadIO m
              => CompressParams -- ^ Parameters of compression
-             -> Enumerator ByteString m a
+             -> Enumeratee ByteString ByteString m a
 enumCompress cp@(CompressParams _ _ size) iter = do
     cmp <- liftIO $ mkCompress cp
     case cmp of
-        Left err -> enumErr err iter
+        Left err -> do
+            _ <- lift $ enumErr err iter
+            throwErr (toException err)
         Right init -> insertOut size compress' init iter
 
 -- | Decompress the input and send to inner iteratee. If there is end of
 -- zlib stream it is left unprocessed.
 enumDecompress :: MonadIO m
                => DecompressParams
-               -> Enumerator ByteString m a
+               -> Enumeratee ByteString ByteString m a
 enumDecompress dp@(DecompressParams _ size) iter = do
     dcmp <- liftIO $ mkDecompress dp
     case dcmp of
-        Left err -> enumErr err iter
+        Left err -> do
+            _ <- lift $ enumErr err iter
+            throwErr (toException err)
         Right init -> insertOut size decompress' init iter
