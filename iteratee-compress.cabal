@@ -14,7 +14,7 @@ Cabal-version:       >=1.6
 
 Flag Debug
   Description:       Enable debug support
-  Default:           True
+  Default:           False
 
 Library
   Exposed-modules:   Data.Iteratee.BZip,
