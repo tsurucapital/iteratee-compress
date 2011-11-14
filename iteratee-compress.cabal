@@ -26,8 +26,7 @@ Library
   Build-tools:       c2hs
   Extensions:        CPP,
                      DeriveDataTypeable,
-                     ForeignFunctionInterface,
-                     ScopedTypeVariables
+                     ForeignFunctionInterface
   Extra-libraries:   z, bz2
   if flag(debug)
       CPP-Options:   -DDEBUG
