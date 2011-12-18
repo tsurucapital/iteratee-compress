@@ -34,6 +34,7 @@ import Data.ByteString as BS
 import Data.ByteString.Internal
 import Data.Iteratee
 import Data.Iteratee.IO
+import Data.Foldable
 import Data.Typeable
 import Foreign
 import Foreign.C
@@ -144,12 +145,13 @@ data CompressParams = CompressParams {
       compressStrategy :: !CompressionStrategy,
       -- | The size of output buffer. That is the size of 'Chunk's that will be
       -- emitted to inner iterator (except the last 'Chunk').
-      compressBufferSize :: !Int
+      compressBufferSize :: !Int,
+      compressDictionary :: !(Maybe ByteString)
     }
 
 defaultCompressParams
     = CompressParams DefaultCompression Deflated DefaultWindowBits 
-                     DefaultMemoryLevel DefaultStrategy (8*1024)
+                     DefaultMemoryLevel DefaultStrategy (8*1024) Nothing
 
 -- | Set of parameters for decompression. For sane defaults see 
 -- 'defaultDecompressParams'.
@@ -162,7 +164,8 @@ data DecompressParams = DecompressParams {
       decompressWindowBits :: !WindowBits,
       -- | The size of output buffer. That is the size of 'Chunk's that will be
       -- emitted to inner iterator (except the last 'Chunk').
-      decompressBufferSize :: !Int
+      decompressBufferSize :: !Int,
+      decompressDictionary :: !(Maybe ByteString)
     }
 
 defaultDecompressParams = DecompressParams DefaultWindowBits (8*1024)
@@ -318,7 +321,7 @@ fromErrno n = Left $! Unexpected n
 convParam :: Format
           -> CompressParams
           -> Either ZLibParamsException (CInt, CInt, CInt, CInt, CInt)
-convParam f (CompressParams c m w l s _)
+convParam f (CompressParams c m w l s _ _)
     = let c' = fromCompressionLevel c
           m' = fromMethod m
           b' = fromWindowBits f w
@@ -604,6 +607,10 @@ foreign import ccall unsafe "&deflateEnd"
                               deflateEnd :: FunPtr (Ptr ZStream -> IO ())
 foreign import ccall unsafe "&inflateEnd"
                               inflateEnd :: FunPtr (Ptr ZStream -> IO ())
+foreign import ccall unsafe deflateSetDictionary :: Ptr ZStream -> Ptr Word8
+                                                 -> CUInt -> IO CInt
+foreign import ccall unsafe inflateSetDictionary :: Ptr ZStream -> Ptr Word8
+                                                 -> CUInt -> IO CInt
 
 deflateInit2 :: Ptr ZStream -> CInt -> CInt -> CInt -> CInt -> CInt -> IO CInt
 deflateInit2 s l m wB mL s'
@@ -644,20 +651,32 @@ mkCompress frm cp
                 memset (castPtr zptr) 0 #{size z_stream}
                 deflateInit2 zptr c m b l s `finally`
                     addForeignPtrFinalizer deflateEnd zstr
+                for_ (compressDictionary cp) $ \(PS fp off len) ->
+                    withForeignPtr fp $ \ptr ->
+                        deflateSetDictionary zptr (ptr `plusPtr` off)
+                                                  (fromIntegral len)
             return $! Right $! Initial $ ZStream zstr
 
 mkDecompress :: Format -> DecompressParams
-             -> IO (Either ZLibParamsException Initial)
-mkDecompress frm cp@(DecompressParams wB _)
-    = case fromWindowBits frm wB of
+             -> IO (Either ZLibParamsException (Initial, Maybe ByteString))
+mkDecompress frm cp@(DecompressParams w _ md)
+    = case fromWindowBits frm w of
         Left err -> return $! Left err
         Right wB' -> do
             zstr <- mallocForeignPtrBytes #{size z_stream}
-            withForeignPtr zstr $ \zptr -> do
+            v <- withForeignPtr zstr $ \zptr -> do
                 memset (castPtr zptr) 0 #{size z_stream}
                 inflateInit2 zptr wB' `finally`
                     addForeignPtrFinalizer inflateEnd zstr
-            return $! Right $! Initial $ ZStream zstr
+                case (md, frm) of
+                    (Just (PS fp off len), Raw) -> do
+                        withForeignPtr fp $ \ptr ->
+                            inflateSetDictionary zptr (ptr `plusPtr` off)
+                                                      (fromIntegral len)
+                        return $! Nothing
+                    (Nothing, _) -> return $! Nothing
+                    (Just bs, _) -> return $! (Just bs)
+            return $! Right $! (Initial $ ZStream zstr, v)
 
 -- User-related code
 
@@ -666,7 +685,7 @@ enumDeflate :: MonadIO m
             => Format -- ^ Format of input
             -> CompressParams -- ^ Parameters of compression
             -> Enumeratee ByteString ByteString m a
-enumDeflate f cp@(CompressParams _ _ _ _ _ size) iter = do
+enumDeflate f cp@(CompressParams _ _ _ _ _ size _) iter = do
     cmp <- liftIO $ mkCompress f cp
     case cmp of
         Left err -> do
@@ -680,13 +699,25 @@ enumInflate :: MonadIO m
             => Format
             -> DecompressParams
             -> Enumeratee ByteString ByteString m a
-enumInflate f dp@(DecompressParams _ size) iter = do
+enumInflate f dp@(DecompressParams _ size md) iter = do
     dcmp <- liftIO $ mkDecompress f dp
     case dcmp of
         Left err -> do
             _ <- lift $ enumErr err iter
             throwErr (toException err)
-        Right init -> insertOut size inflate' init iter
+        Right (init, Nothing) -> insertOut size inflate' init iter
+        Right (init, (Just (PS fp off len))) ->
+            let inflate'' zstr param = do
+                  ret <- inflate' zstr param
+                  case fromErrno ret of
+                      Left NeedDictionary -> do
+                          withForeignPtr fp $ \ptr ->
+                              withZStream zstr $ \zptr ->
+                                  inflateSetDictionary zptr (ptr `plusPtr` off)
+                                                            (fromIntegral len)
+                          inflate' zstr param
+                      _ -> return ret
+            in insertOut size inflate'' init iter
 
 enumSyncFlush :: Monad m => Enumerator ByteString m a
 -- ^ Enumerate synchronise flush. It cause the all pending output to be flushed
