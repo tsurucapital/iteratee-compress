@@ -20,6 +20,9 @@ module Data.Iteratee.ZLib
     WindowBits(..),
     MemoryLevel(..),
     CompressionStrategy(..),
+    enumSyncFlush,
+    enumFullFlush,
+    enumBlockFlush,
   )
 where
 #include <zlib.h>
@@ -684,3 +687,23 @@ enumInflate f dp@(DecompressParams _ size) iter = do
             _ <- lift $ enumErr err iter
             throwErr (toException err)
         Right init -> insertOut size inflate' init iter
+
+enumSyncFlush :: Monad m => Enumerator ByteString m a
+-- ^ Enumerate synchronise flush. It cause the all pending output to be flushed
+-- and all available input is sent to inner Iteratee.
+enumSyncFlush = enumErr SyncFlush
+
+enumFullFlush :: Monad m => Enumerator ByteString m a
+-- ^ Enumerate full flush. It flushes all pending output and reset the
+-- compression. It allows to restart from this point if compressed data was
+-- corrupted but it can affect the compression rate.
+--
+-- It may be only used during compression.
+enumFullFlush = enumErr FullFlush
+
+enumBlockFlush :: Monad m => Enumerator ByteString m a
+-- ^ Enumerate block flush. If the enumerator is compressing it allows to
+-- finish current block. If the enumerator is decompressing it forces to stop 
+-- on next block boundary.
+enumBlockFlush = enumErr Block
+
