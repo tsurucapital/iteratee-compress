@@ -5,7 +5,7 @@ Description:         An enumerators for compressing and decompressing streams
 License:             BSD3
 License-file:        LICENSE
 Author:              Maciej Piechotka
-Maintainer:          uzytkownik2@gmail.com
+Maintainer:          iteratee-compress@tsurucapital.com
 Copyright:           2010 (c) Maciej Piechotka
 Category:            Codec, Data
 Build-type:          Simple
@@ -33,4 +33,4 @@ Library
 
 Source-Repository head
   Type:              git
-  Location:          git://gitorious.org/iteratee-compress/iteratee-compress.git
+  Location:          git://github.com/tsurucapital/iteratee-compress.git
