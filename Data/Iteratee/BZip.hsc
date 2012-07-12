@@ -3,7 +3,7 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 module Data.Iteratee.BZip
   (
-    -- * Enumerators
+    -- * Enumeratees
     enumCompress,
     enumDecompress,
     -- * Exceptions

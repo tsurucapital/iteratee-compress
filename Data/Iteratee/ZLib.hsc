@@ -3,7 +3,7 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 module Data.Iteratee.ZLib
   (
-    -- * Enumerators
+    -- * Enumeratees
     enumInflate,
     enumDeflate,
     -- * Exceptions
