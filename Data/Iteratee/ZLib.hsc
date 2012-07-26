@@ -1,6 +1,8 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE ForeignFunctionInterface #-}
+
+{-# OPTIONS -Wall -fno-warn-unused-do-bind #-}
 module Data.Iteratee.ZLib
   (
     -- * Enumeratees
@@ -33,7 +35,6 @@ import Control.Monad.Trans
 import Data.ByteString as BS
 import Data.ByteString.Internal
 import Data.Iteratee
-import Data.Iteratee.IO
 import Data.Foldable
 import Data.Typeable
 import Foreign
@@ -129,8 +130,6 @@ newtype ZStream = ZStream (ForeignPtr ZStream)
 withZStream :: ZStream -> (Ptr ZStream -> IO a) -> IO a
 withZStream (ZStream fptr) = withForeignPtr fptr
 
-mallocZStream :: IO ZStream
-mallocZStream = ZStream <$> mallocForeignPtrBytes #{size z_stream}
 
 -- Following code is copied from Duncan Coutts zlib haskell library version
 -- 0.5.2.0 ((c) 2006-2008 Duncan Coutts, published on BSD licence) and adapted
@@ -149,6 +148,7 @@ data CompressParams = CompressParams {
       compressDictionary :: !(Maybe ByteString)
     }
 
+defaultCompressParams :: CompressParams
 defaultCompressParams
     = CompressParams DefaultCompression Deflated DefaultWindowBits 
                      DefaultMemoryLevel DefaultStrategy (8*1024) Nothing
@@ -441,19 +441,19 @@ insertOut :: MonadIO m
           -> (ZStream -> CInt -> IO CInt)
           -> Initial
           -> Enumeratee ByteString ByteString m a
-insertOut size run (Initial zstr) iter = do
+insertOut size runf (Initial zstr) iter = do
     _out <- liftIO $ putOutBuffer size zstr
 #ifdef DEBUG
     liftIO $ IO.hPutStrLn stderr $ "Inserted out buffer of size " ++ show size
 #endif
-    fill size run (EmptyIn zstr _out) iter
+    fill size runf (EmptyIn zstr _out) iter
 
 fill :: MonadIO m
      => Int
      -> (ZStream -> CInt -> IO CInt)
      -> EmptyIn
      -> Enumeratee ByteString ByteString m a
-fill size run (EmptyIn zstr _out) iter
+fill size run' (EmptyIn zstr _out) iter
     = let fill' (Chunk _in)
               | not (BS.null _in) = do
                   liftIO $ putInBuffer zstr _in
@@ -461,15 +461,15 @@ fill size run (EmptyIn zstr _out) iter
                   liftIO $ IO.hPutStrLn stderr $
                       "Inserted in buffer of size " ++ show (BS.length _in)
 #endif
-                  doRun size run (Invalid zstr _in _out) iter
+                  doRun size run' (Invalid zstr _in _out) iter
               | otherwise = fillI
           fill' (EOF Nothing) = do
               out <- liftIO $ pullOutBuffer zstr _out
               iter' <- lift $ enumPure1Chunk out iter
-              finish size run (Finishing zstr BS.empty) iter'
+              finish size run' (Finishing zstr BS.empty) iter'
           fill' (EOF (Just err))
               = case fromException err of
-                  Just err' -> flush size run (Flushing zstr err' _out) iter
+                  Just err' -> flush size run' (Flushing zstr err' _out) iter
                   Nothing -> throwRecoverableErr err fill'
 #ifdef DEBUG
           fillI = do
@@ -485,24 +485,24 @@ swapOut :: MonadIO m
         -> (ZStream -> CInt -> IO CInt)
         -> FullOut
         -> Enumeratee ByteString ByteString m a
-swapOut size run (FullOut zstr _in) iter = do
+swapOut size run' (FullOut zstr _in) iter = do
     _out <- liftIO $ putOutBuffer size zstr
 #ifdef DEBUG
     liftIO $ IO.hPutStrLn stderr $ "Swapped out buffer of size " ++ show size
 #endif
-    doRun size run (Invalid zstr _in _out) iter
+    doRun size run' (Invalid zstr _in _out) iter
 
 doRun :: MonadIO m
       => Int
       -> (ZStream -> CInt -> IO CInt)
       -> Invalid
       -> Enumeratee ByteString ByteString m a
-doRun size run (Invalid zstr _in _out) iter = do
+doRun size run' (Invalid zstr _in _out) iter = do
 #ifdef DEBUG
     liftIO $ IO.hPutStrLn stderr $ "About to run"
     liftIO $ dumpZStream zstr
 #endif
-    status <- liftIO $ run zstr #{const Z_NO_FLUSH}
+    status <- liftIO $ run' zstr #{const Z_NO_FLUSH}
 #ifdef DEBUG
     liftIO $ IO.hPutStrLn stderr $ "Runned"
 #endif
@@ -525,10 +525,10 @@ doRun size run (Invalid zstr _in _out) iter = do
                     out <- liftIO $ pullOutBuffer zstr _out
                     iter' <- lift $ enumPure1Chunk out iter
                     case avail_in of
-                        0 -> insertOut size run (Initial zstr) iter'
-                        _ -> swapOut size run (FullOut zstr _in) iter'
+                        0 -> insertOut size run' (Initial zstr) iter'
+                        _ -> swapOut size run' (FullOut zstr _in) iter'
                 _ -> case avail_in of
-                    0 -> fill size run (EmptyIn zstr _out) iter
+                    0 -> fill size run' (EmptyIn zstr _out) iter
                     _ -> do
                         _ <- joinIM $ enumErr IncorrectState iter
                         throwErr (toException IncorrectState)
@@ -538,8 +538,8 @@ flush :: MonadIO m
       -> (ZStream -> CInt -> IO CInt)
       -> Flushing
       -> Enumeratee ByteString ByteString m a
-flush size run fin@(Flushing zstr _flush _out) iter = do
-    status <- liftIO $ run zstr (fromFlush _flush)
+flush size run' (Flushing zstr _flush _out) iter = do
+    status <- liftIO $ run' zstr (fromFlush _flush)
     case fromErrno status of
         Left err -> do
             _ <- joinIM $ enumErr err iter
@@ -549,7 +549,9 @@ flush size run fin@(Flushing zstr _flush _out) iter = do
             iter' <- lift $ enumPure1Chunk out iter
             idone iter' (Chunk BS.empty)
         Right True -> do
-            (avail_in, avail_out) <- liftIO $ withZStream zstr $ \zptr -> do
+            -- TODO: avail_in is unused, can it be completely removed?
+            -- or should it be used?
+            (_avail_in, avail_out) <- liftIO $ withZStream zstr $ \zptr -> do
                 avail_in <- liftIO $ #{peek z_stream, avail_in} zptr
                 avail_out <- liftIO $ #{peek z_stream, avail_out} zptr
                 return (avail_in, avail_out) :: IO (CInt, CInt)
@@ -558,21 +560,21 @@ flush size run fin@(Flushing zstr _flush _out) iter = do
                     out <- liftIO $ pullOutBuffer zstr _out
                     iter' <- lift $ enumPure1Chunk out iter
                     out' <- liftIO $ putOutBuffer size zstr
-                    flush size run (Flushing zstr _flush out') iter'
-                _ -> insertOut size run (Initial zstr) iter
+                    flush size run' (Flushing zstr _flush out') iter'
+                _ -> insertOut size run' (Initial zstr) iter
 
 finish :: MonadIO m
        => Int
        -> (ZStream -> CInt -> IO CInt)
        -> Finishing
        -> Enumeratee ByteString ByteString m a
-finish size run fin@(Finishing zstr _in) iter = do
+finish size run' fin@(Finishing zstr _in) iter = do
 #ifdef DEBUG
     liftIO $ IO.hPutStrLn stderr $
         "Finishing with out buffer of size " ++ show size
 #endif
     _out <- liftIO $ putOutBuffer size zstr
-    status <- liftIO $ run zstr #{const Z_FINISH}
+    status <- liftIO $ run' zstr #{const Z_FINISH}
     case fromErrno status of
         Left err -> do
             _ <- lift $ enumErr err iter
@@ -583,16 +585,16 @@ finish size run fin@(Finishing zstr _in) iter = do
             iter' <- lift $ enumPure1Chunk out iter
             idone iter' (Chunk remaining)
         Right True -> do
-            (avail_in, avail_out) <- liftIO $ withZStream zstr $ \zptr -> do
+            -- TODO: avail_in is unused, is this an error or can it be removed?
+            (_avail_in, avail_out) <- liftIO $ withZStream zstr $ \zptr -> do
                 avail_in <- liftIO $ #{peek z_stream, avail_in} zptr
                 avail_out <- liftIO $ #{peek z_stream, avail_out} zptr
                 return (avail_in, avail_out) :: IO (CInt, CInt)
             case avail_out of
                 0 -> do
-                    out <- liftIO $ withZStream zstr $ \zptr ->
-                        pullOutBuffer zstr _out
+                    out <- liftIO $ pullOutBuffer zstr _out
                     iter' <- lift $ enumPure1Chunk out iter
-                    finish size run fin iter'
+                    finish size run' fin iter'
                 _ -> do
                     _ <-  lift $ enumErr (toException IncorrectState) iter
                     throwErr $! toException IncorrectState
@@ -660,7 +662,7 @@ mkCompress frm cp
 
 mkDecompress :: Format -> DecompressParams
              -> IO (Either ZLibParamsException (Initial, Maybe ByteString))
-mkDecompress frm cp@(DecompressParams w _ md)
+mkDecompress frm (DecompressParams w _ md)
     = case fromWindowBits frm w of
         Left err -> return $! Left err
         Right wB' -> do
@@ -692,7 +694,7 @@ enumDeflate f cp@(CompressParams _ _ _ _ _ size _) iter = do
         Left err -> do
             _ <- lift $ enumErr err iter
             throwErr (toException err)
-        Right init -> insertOut size deflate' init iter
+        Right init' -> insertOut size deflate' init' iter
 
 -- | Decompress the input and send to inner iteratee. If there is end of
 -- zlib stream it is left unprocessed.
@@ -700,14 +702,14 @@ enumInflate :: MonadIO m
             => Format
             -> DecompressParams
             -> Enumeratee ByteString ByteString m a
-enumInflate f dp@(DecompressParams _ size md) iter = do
+enumInflate f dp@(DecompressParams _ size _md) iter = do
     dcmp <- liftIO $ mkDecompress f dp
     case dcmp of
         Left err -> do
             _ <- lift $ enumErr err iter
             throwErr (toException err)
-        Right (init, Nothing) -> insertOut size inflate' init iter
-        Right (init, (Just (PS fp off len))) ->
+        Right (init', Nothing) -> insertOut size inflate' init' iter
+        Right (init', (Just (PS fp off len))) ->
             let inflate'' zstr param = do
                   ret <- inflate' zstr param
                   case fromErrno ret of
@@ -718,7 +720,7 @@ enumInflate f dp@(DecompressParams _ size md) iter = do
                                                             (fromIntegral len)
                           inflate' zstr param
                       _ -> return ret
-            in insertOut size inflate'' init iter
+            in insertOut size inflate'' init' iter
 
 enumSyncFlush :: Monad m => Enumerator ByteString m a
 -- ^ Enumerate synchronise flush. It cause the all pending output to be flushed
