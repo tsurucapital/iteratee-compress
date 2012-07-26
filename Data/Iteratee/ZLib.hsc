@@ -168,7 +168,8 @@ data DecompressParams = DecompressParams {
       decompressDictionary :: !(Maybe ByteString)
     }
 
-defaultDecompressParams = DecompressParams DefaultWindowBits (8*1024)
+defaultDecompressParams :: DecompressParams
+defaultDecompressParams = DecompressParams DefaultWindowBits (8*1024) Nothing
 
 -- | Specify the format for compression and decompression
 data Format
