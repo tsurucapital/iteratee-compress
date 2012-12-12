@@ -23,7 +23,7 @@ Library
                      bytestring >= 0.9 && < 0.11,
                      iteratee >= 0.8.4 && < 0.9,
                      mtl >= 2.0 && < 2.2
-  Build-tools:       c2hs
+  Build-tools:       hsc2hs
   Extensions:        CPP,
                      DeriveDataTypeable,
                      ForeignFunctionInterface
