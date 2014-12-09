@@ -1,5 +1,5 @@
 Name:                iteratee-compress
-Version:             0.3.3.1
+Version:             0.3.3.2
 Synopsis:            Enumeratees for compressing and decompressing streams
 Description:         Enumeratees for compressing and decompressing streams
 License:             BSD3

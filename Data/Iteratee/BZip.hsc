@@ -369,9 +369,12 @@ doRun size runf (Invalid bzstr _in _out) iter = do
                 0 -> do
                     out <- liftIO $ pullOutBuffer bzstr _out
                     iter' <- lift $ enumPure1Chunk out iter
-                    case avail_in of
-                        0 -> insertOut size runf (Initial bzstr) iter'
-                        _ -> swapOut size runf (FullOut bzstr _in) iter'
+                    (done, iter'') <- lift $ enumCheckIfDone iter'
+                    if done
+                        then return iter''
+                        else case avail_in of
+                                0 -> insertOut size runf (Initial bzstr) iter''
+                                _ -> swapOut size runf (FullOut bzstr _in) iter''
                 _ -> case avail_in of
                     0 -> fill size runf (EmptyIn bzstr _out) iter
                     _ -> do
