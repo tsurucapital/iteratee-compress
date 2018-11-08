@@ -44,6 +44,7 @@ import qualified Foreign.Concurrent as C
 import System.IO (stderr)
 import qualified System.IO as IO
 #endif
+import Prelude
 
 -- | Denotes error is user-supplied parameter
 data ZLibParamsException
@@ -83,7 +84,7 @@ data ZlibFlush
     -- to inner Iteratee.
     | FullFlush
     -- ^ Flush all pending output and reset the compression state. It allows to
-    -- restart from this point if compression was damaged but it can seriously 
+    -- restart from this point if compression was damaged but it can seriously
     -- affect the compression rate.
     --
     -- It may be only used during compression.
@@ -124,7 +125,7 @@ instance Show ZLibException where
     show IncorrectState = "zlib: incorrect state"
 
 instance Exception ZLibParamsException
-instance Exception ZLibException 
+instance Exception ZLibException
 
 newtype ZStream = ZStream (ForeignPtr ZStream)
 withZStream :: ZStream -> (Ptr ZStream -> IO a) -> IO a
@@ -150,16 +151,16 @@ data CompressParams = CompressParams {
 
 defaultCompressParams :: CompressParams
 defaultCompressParams
-    = CompressParams DefaultCompression Deflated DefaultWindowBits 
+    = CompressParams DefaultCompression Deflated DefaultWindowBits
                      DefaultMemoryLevel DefaultStrategy (8*1024) Nothing
 
--- | Set of parameters for decompression. For sane defaults see 
+-- | Set of parameters for decompression. For sane defaults see
 -- 'defaultDecompressParams'.
 data DecompressParams = DecompressParams {
       -- | Window size - it have to be at least the size of
       -- 'compressWindowBits' the stream was compressed with.
       --
-      -- Default in 'defaultDecompressParams' is the maximum window size - 
+      -- Default in 'defaultDecompressParams' is the maximum window size -
       -- please do not touch it unless you know what you are doing.
       decompressWindowBits :: !WindowBits,
       -- | The size of output buffer. That is the size of 'Chunk's that will be
@@ -180,7 +181,7 @@ data Format
     -- It is intended primarily for compressing individual files but is also
     -- used for network protocols such as HTTP.
     --
-    -- The format is described in RFC 1952 
+    -- The format is described in RFC 1952
     -- <http://www.ietf.org/rfc/rfc1952.txt>.
     | Zlib
     -- ^ The zlib format uses a minimal header with a checksum but no other
@@ -190,7 +191,7 @@ data Format
     -- <http://www.ietf.org/rfc/rfc1950.txt>
     | Raw
     -- ^ The \'raw\' format is just the DEFLATE compressed data stream without
-    -- and additionl headers. 
+    -- and additionl headers.
     --
     -- Thr format is described in RFC 1951
     -- <http://www.ietf.org/rfc/rfc1951.txt>
@@ -214,13 +215,13 @@ data CompressionLevel
 -- | Specify the compression method.
 data Method
     = Deflated
-    -- ^ \'Deflate\' is so far the only method supported.          
+    -- ^ \'Deflate\' is so far the only method supported.
 
 -- | This specify the size of compression level. Larger values result in better
 -- compression at the expense of highier memory usage.
 --
 -- The compression window size is 2 to the power of the value of the window
--- bits. 
+-- bits.
 --
 -- The total memory used depends on windows bits and 'MemoryLevel'.
 data WindowBits
@@ -252,7 +253,7 @@ data MemoryLevel
     -- memory level 9).
     -- The internal state is 256kib or 32kiB.
     | MemoryLevel Int
-    -- ^ A specific level. It have to be between 1 and 9. 
+    -- ^ A specific level. It have to be between 1 and 9.
 
 -- | Tunes the compress algorithm but does not affact the correctness.
 data CompressionStrategy
@@ -267,7 +268,7 @@ data CompressionStrategy
     -- intermediate between 'DefaultStrategy' and 'HuffmanOnly'.
     | HuffmanOnly
     -- ^ Use the Huffman-only compression strategy to force Huffman encoding
-    -- only (no string match). 
+    -- only (no string match).
 
 fromMethod :: Method -> CInt
 fromMethod Deflated = #{const Z_DEFLATED}
@@ -363,7 +364,7 @@ convParam f (CompressParams c m w l s _ _)
 --    all outs was sent.
 -- Finished: Operation finished
 -- Flushing: Flush requested
--- 
+--
 -- Please note that the decompressing can finish also on flush and finish.
 --
 -- [1] Named for 'historical' reasons
@@ -524,9 +525,12 @@ doRun size run' (Invalid zstr _in _out) iter = do
                 0 -> do
                     out <- liftIO $ pullOutBuffer zstr _out
                     iter' <- lift $ enumPure1Chunk out iter
-                    case avail_in of
-                        0 -> insertOut size run' (Initial zstr) iter'
-                        _ -> swapOut size run' (FullOut zstr _in) iter'
+                    (done, iter'') <- lift $ enumCheckIfDone iter'
+                    if done
+                        then return iter''
+                        else case avail_in of
+                            0 -> insertOut size run' (Initial zstr) iter''
+                            _ -> swapOut size run' (FullOut zstr _in) iter''
                 _ -> case avail_in of
                     0 -> fill size run' (EmptyIn zstr _out) iter
                     _ -> do
@@ -737,7 +741,6 @@ enumFullFlush = enumErr FullFlush
 
 enumBlockFlush :: Monad m => Enumerator ByteString m a
 -- ^ Enumerate block flush. If the enumerator is compressing it allows to
--- finish current block. If the enumerator is decompressing it forces to stop 
+-- finish current block. If the enumerator is decompressing it forces to stop
 -- on next block boundary.
 enumBlockFlush = enumErr Block
-
